@@ -16,6 +16,7 @@ knitr::opts_chunk$set(echo = TRUE)
 
 \
 \
+
 # Starting Steps \
 First, we load relevant libraries, needed for various operations (using the pacman library).
 
@@ -38,6 +39,7 @@ combined<-read.csv("combined_data.csv")
 
 \
 \
+
 # Methods \
 For elements our methods section, we note sample demographics, means. etc. This is related to **Methods Section 2.5**. First, we recode and rename variables to make naming more appropriate for table 1 (the R library).\
 \
@@ -81,6 +83,7 @@ table1(~ Sex + Age + Diagnosis + IQ + BMI + StructuralMRIQuality, data=combined)
 
 \
 \
+
 # Results \
 Analyses related to CAT 12 QC Ratings, and Passing [yes/no]. This is related to **Results, Section 4.1**
 
@@ -246,7 +249,7 @@ Only_Subcortex_t_stats<-Only_Subcortex$t_stats
 aseg_statistical_values= tibble(label=c(Only_Subcortex_Filenames),t=c(Only_Subcortex_t_stats))
 
 aseg_statistical_values %>% 
-ggseg(mapping=aes(fill=t),colour="black",atlas=aseg)+ scale_fill_gradientn(limits = c(-3.5,3.5),colours = c("cornflowerblue","white","red1"),na.value="grey")
+ggseg(mapping=aes(fill=t),colour="black",atlas=aseg)+ scale_fill_gradientn(limits = c(-4,4),colours = c("cornflowerblue","white","red1"),na.value="grey")
 
 ```
 
