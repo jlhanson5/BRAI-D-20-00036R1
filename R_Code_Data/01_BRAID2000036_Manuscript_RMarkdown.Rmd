@@ -1,0 +1,1140 @@
+---
+title: RMarkdown for "Variations in Structural MRI Quality Significantly Impacts Commonly-Used
+  Measures of Brain Anatomy [Revised]"
+author: "Jamie Hanson"
+date: "03/11/2021"
+output:
+  html_document:
+    df_print: paged
+  html_notebook: default
+  pdf_document: default
+---
+\
+\
+
+# Starting Steps \
+First, we load relevant libraries, needed for various operations (using the pacman library).
+```{r Loading needed R libraries }
+library(pacman)
+pacman::p_load(dplyr,ggplot2,pROC,car,corrplot,caret, gt, gtsummary,rcompanion)
+```
+
+\
+Next, load data (from the related/included csv file)
+One subject is removed because they did not complete CAT12 processing
+```{r Loading Data File [csv] }
+combined<-read.csv("HBN_combined_2021_03_04_full.csv")
+combined<-subset(combined,combined$CAT12_QC_Weighted_Average!="NA")
+```
+
+\
+
+# Methods \
+For elements our methods section, we note sample demographics, means. etc. This is related to **Methods Section 2.5**. First, we recode and rename variables to make naming more appropriate for table 1 (the R library).\
+
+Notes re: variables-- \
+-Basic_Demos.Sex = Participant Sex (coded Male / Female) \
+-Diagnosis_ClinicianConsensus.NoDX  = Participant Clinical Diagnoses (coded as No / Yes) \
+-Basic_Demos.Age = Participant Age (coded in # of years) \
+-WISC.WISC_FSIQ = Participant Wechsler Intelligence Scale for Children, Full Scale IQ  (continuous measure) \
+-Physical.BMI = Participant BMI (continuous measure) \
+-CAT12_QC_Weighted_Average = MRI Quality Rating (continuous measure) \
+\
+
+```{r recode data}
+combined$Basic_Demos.Sex<-car::recode(combined$Basic_Demos.Sex,'0="Male";1="Female"')
+combined$Diagnosis_ClinicianConsensus.NoDX<-car::recode(combined$Diagnosis_ClinicianConsensus.NoDX,'1="No History";2="One or more Disorder"')
+combined$Sex<-as.factor(combined$Basic_Demos.Sex)
+combined$Age<-as.numeric(combined$Basic_Demos.Age)
+combined$Diagnosis<-as.factor(combined$Diagnosis_ClinicianConsensus.NoDX)
+combined$IQ<-as.numeric(combined$WISC.WISC_FSIQ)
+combined$BMI<-as.numeric(combined$Physical.BMI)
+combined$StructuralMRIQuality<-as.numeric(combined$CAT12_QC_Weighted_Average)
+```
+
+\
+\
+Construction of **Table 1** (via gtmmary R package)
+```{r generate table 1}
+combined_table <- combined %>% select(Sex, Age, Diagnosis, IQ,BMI,StructuralMRIQuality,SurfaceHoles)
+combined_table %>% tbl_summary(statistic = list(all_continuous() ~ "{mean} ({sd})"),label = list(Age ~ "Age (in Years)",IQ ~ "General Cognitive Ability",StructuralMRIQuality~"Structural MRI Quality, CAT12 Toolbox", SurfaceHoles~"Freesurfer Euler Number"), missing_text = "[Missing]") %>% bold_labels() %>% modify_header(label ~ "**Sample Characteristics**")
+```
+
+\
+\
+
+# Results \
+Analyses related to CAT 12 QC Ratings, and Passing [yes/no]. This is related to **Results, Section 4.1**
+
+```{r Results related to Quality Control and Passing Visual Checks}
+summary(model_CAT12_pass<-glm(passing~ CAT12_QC_Weighted_Average , family = "binomial", data=combined))
+```
+ 
+```{r Partial R-Squared for that model}
+nagelkerke(model_CAT12_pass)
+```
+
+\
+\
+We also completed a **Bayesian GLM**, as a supplemental analysis (given the warning message in the above "frequentist" GLM \
+```{r bayesian logistic model, as a check}
+suppressMessages(library(arm))
+summary(bayesglm(passing ~ CAT12_QC_Weighted_Average, data=combined, family="binomial"))
+```
+
+\
+\
+Generating **Figure 2** (ROC Curve with confidence intervals)
+```{r Generating Figure 2 ROC Curve}
+
+roc<-plot.roc(combined$passing, combined$CAT12_QC_Weighted_Average,main = "Confidence intervals", percent=TRUE,ci = TRUE,print.auc = TRUE, asp = NA,direction="auto")  
+
+ciobj <- ci.se(roc,specificities = seq(0, 100, 5)) 
+plot(ciobj, type = "shape", col = "red")
+```
+
+\
+\
+Additionally, we construct **Confusion matrices** (using training and test datasets) \
+Of note, it is 80% training and 20% holdout/test \
+This is a random sample every time, so there may be variations in exact confusion matrix statistics ] 
+```{r create confusion matrix}
+train.rows <- sample(nrow(combined),0.80*nrow(combined),replace=TRUE)
+TRAIN <- combined[train.rows,]
+HOLDOUT <- combined[-train.rows,]
+
+logitMod <- glm(passing ~ CAT12_QC_Weighted_Average, data=TRAIN, family=binomial(link="logit"))
+pdata <- predict(logitMod, newdata = HOLDOUT, type = "response")
+predicted<-factor(as.numeric(pdata>0.5))
+HOLDOUT$passing<-factor(HOLDOUT$passing)
+
+cm<-confusionMatrix(predicted, HOLDOUT$passing)
+
+## Figure 3: Confusion Matrix, using R code found here-- https://stackoverflow.com/questions/23891140/r-how-to-visualize-confusion-matrix-using-the-caret-package
+draw_confusion_matrix <- function(cm) {
+  
+  total <- sum(cm$table)
+  res <- as.numeric(cm$table)
+  
+  # Generate color gradients. Palettes come from RColorBrewer.
+  greenPalette <- c("#F7FCF5","#E5F5E0","#C7E9C0","#A1D99B","#74C476","#41AB5D","#238B45","#006D2C","#00441B")
+  redPalette <- c("#FFF5F0","#FEE0D2","#FCBBA1","#FC9272","#FB6A4A","#EF3B2C","#CB181D","#A50F15","#67000D")
+  getColor <- function (greenOrRed = "green", amount = 0) {
+    if (amount == 0)
+      return("#FFFFFF")
+    palette <- greenPalette
+    if (greenOrRed == "red")
+      palette <- redPalette
+    colorRampPalette(palette)(100)[10 + ceiling(90 * amount / total)]
+  }
+  
+  # set the basic layout
+  layout(matrix(c(1,1,2)))
+  par(mar=c(2,2,2,2))
+  plot(c(100, 345), c(300, 450), type = "n", xlab="", ylab="", xaxt='n', yaxt='n')
+  title('CONFUSION MATRIX', cex.main=2)
+  
+  # create the matrix 
+  classes = colnames(cm$table)
+  rect(150, 430, 240, 370, col=getColor("green", res[1]))
+  text(195, 435, classes[1], cex=1.2)
+  rect(250, 430, 340, 370, col=getColor("red", res[3]))
+  text(295, 435, classes[2], cex=1.2)
+  text(125, 370, 'Predicted', cex=1.3, srt=90, font=2)
+  text(245, 450, 'Actual', cex=1.3, font=2)
+  rect(150, 305, 240, 365, col=getColor("red", res[2]))
+  rect(250, 305, 340, 365, col=getColor("green", res[4]))
+  text(140, 400, classes[1], cex=1.2, srt=90)
+  text(140, 335, classes[2], cex=1.2, srt=90)
+  
+  # add in the cm results
+  text(195, 400, res[1], cex=1.6, font=2, col='white')
+  text(195, 335, res[2], cex=1.6, font=2, col='white')
+  text(295, 400, res[3], cex=1.6, font=2, col='white')
+  text(295, 335, res[4], cex=1.6, font=2, col='white')
+  
+  # add in the specifics 
+  plot(c(100, 0), c(100, 0), type = "n", xlab="", ylab="", main = "DETAILS", xaxt='n', yaxt='n')
+  text(10, 85, names(cm$byClass[1]), cex=1.2, font=2)
+  text(10, 70, round(as.numeric(cm$byClass[1]), 3), cex=1.2)
+  text(30, 85, names(cm$byClass[2]), cex=1.2, font=2)
+  text(30, 70, round(as.numeric(cm$byClass[2]), 3), cex=1.2)
+  text(50, 85, names(cm$byClass[5]), cex=1.2, font=2)
+  text(50, 70, round(as.numeric(cm$byClass[5]), 3), cex=1.2)
+  text(70, 85, names(cm$byClass[6]), cex=1.2, font=2)
+  text(70, 70, round(as.numeric(cm$byClass[6]), 3), cex=1.2)
+  text(90, 85, names(cm$byClass[7]), cex=1.2, font=2)
+  text(90, 70, round(as.numeric(cm$byClass[7]), 3), cex=1.2)
+  
+  # add in the accuracy information 
+  text(30, 35, names(cm$overall[1]), cex=1.5, font=2)
+  text(30, 20, round(as.numeric(cm$overall[1]), 3), cex=1.4)
+  text(70, 35, names(cm$overall[2]), cex=1.5, font=2)
+  text(70, 20, round(as.numeric(cm$overall[2]), 3), cex=1.4)
+}
+draw_confusion_matrix(cm)
+```
+
+\
+\
+Results for relations between sociodemographics and MRI Quality \
+**Results, Section 4.2**
+```{r Relations between age and MRI Quality}
+summary(lm(CAT12_QC_Weighted_Average~ combined$Basic_Demos.Age , data=combined))
+lm.beta::lm.beta(lm(CAT12_QC_Weighted_Average~ combined$Basic_Demos.Age , data=combined))
+```
+
+\
+\
+Generating **Figure 2** (scatterplot of age and MRI Quality)
+
+```{r scatterplot of age and MRI Quality}
+combined$passing_label <- factor(combined$passing,
+levels = c(0,1),
+labels = c("Fail", "Pass"))
+ggplot(combined, aes(y=CAT12_QC_Weighted_Average, x=Basic_Demos.Age, color=passing_label)) +geom_point(shape=16, size=5,alpha = 0.5,show.legend = FALSE) + geom_smooth(method=lm, color = 'red') 
+```
+
+\
+\
+Additional Tests in **Results, Section 4.2** (all non-significant)
+```{r Additional Tests between Person-Level Variables and MRI Quality}
+
+summary(lm(CAT12_QC_Weighted_Average~ combined$Basic_Demos.Sex , data=combined))
+summary(lm(CAT12_QC_Weighted_Average~ combined$WISC.WISC_FSIQ , data=combined))
+lm.beta::lm.beta(lm(CAT12_QC_Weighted_Average~ combined$WISC.WISC_FSIQ , data=combined))
+
+summary(lm(CAT12_QC_Weighted_Average~ combined$Physical.BMI , data=combined))
+summary(lm(CAT12_QC_Weighted_Average~ combined$Diagnosis_ClinicianConsensus.NoDX , data=combined))
+```
+
+\
+\
+Additional Analyses in **Results, Section 4.2** (only the subjects that pass visual inspection)
+```{r Additional Tests with only passers}
+OnlySubsPassingVisualQC<-subset(combined,combined$passing==1)
+summary(lm(CAT12_QC_Weighted_Average~ Basic_Demos.Age , data=OnlySubsPassingVisualQC))
+summary(lm(CAT12_QC_Weighted_Average~ Basic_Demos.Sex , data=OnlySubsPassingVisualQC))
+summary(lm(CAT12_QC_Weighted_Average~ WISC.WISC_FSIQ , data=OnlySubsPassingVisualQC))
+summary(lm(CAT12_QC_Weighted_Average~ Physical.BMI , data=OnlySubsPassingVisualQC))
+summary(lm(CAT12_QC_Weighted_Average~ factor(Diagnosis_ClinicianConsensus.NoDX) , data=OnlySubsPassingVisualQC))
+```
+
+\
+\
+Results for relations between Freesurfer Outputs and MRI Quality, **Results, Section 4.3**. We complete some looped regressions, save relevant statistics, multiple-comparison correction, and then prep for Figure construction.\
+
+Analyses for Cortical Surface Area \
+We select the relevant Cortical Area outputs below \
+Remove some additional, non-area related variables \
+And then put CAT12 QC measures "back in" our dataframe 
+```{r this is all for Freesurfer Cortical Area Outputs}
+OnlySubsPassingVisualQC_Freesurfer_AREA<-OnlySubsPassingVisualQC[,78:147]
+OnlySubsPassingVisualQC_Freesurfer_AREA<-OnlySubsPassingVisualQC_Freesurfer_AREA %>% dplyr::select(-c(lh_WhiteSurfArea_area,eTIV))
+OnlySubsPassingVisualQC_Freesurfer_AREA$CAT12_QC_Weighted_Average<-OnlySubsPassingVisualQC$CAT12_QC_Weighted_Average
+AREA_for_Figure<-OnlySubsPassingVisualQC_Freesurfer_AREA[,1:68]
+CAT12Ratings<-OnlySubsPassingVisualQC_Freesurfer_AREA[,69]
+```
+
+\
+\
+Now we run a loop of regression \
+Each examines a brain parcel's area \
+in Relation to Structural MRI \
+There's also some column collapsing, renaming, etc. \
+```{r Regression Loop for Surface Area}
+## Regression Loop, with Area as DV and  QC as IV
+
+n<-68
+AREA_Loop_to_Extract_Tstats <- lapply(1:n, function(x) lm(AREA_for_Figure[,x] ~  CAT12Ratings))
+
+## Pull out T-Statistics from Regressions
+AREA_summaries <- lapply(AREA_Loop_to_Extract_Tstats, summary)
+AREA_saved_T<-lapply(AREA_summaries, function(x) x$coefficients[, c(3)])
+AREA_T_Statistics_temp<-lapply(AREA_saved_T, function (x) x[c('CAT12Ratings')])
+AREA_just_T_Statistics<-do.call(rbind.data.frame, AREA_T_Statistics_temp)
+names(AREA_just_T_Statistics)[1] <- "T_stat"
+
+## Rename and Reorder the data frames (related to t-statistics)
+AREA_just_T_Statistics$BrainRegions<-(colnames(OnlySubsPassingVisualQC_Freesurfer_AREA)[1:68])
+AREA_just_T_Statistics<-AREA_just_T_Statistics[, c(2,1)]
+
+## Pull out P-Values from Regressions
+AREA_saved_p<-lapply(AREA_summaries, function(x) x$coefficients[, c(4)])
+AREA_p_Statistics_temp<-lapply(AREA_saved_p, function (x) x[c('CAT12Ratings')])
+AREA_just_p_Statistics<-do.call(rbind.data.frame, AREA_p_Statistics_temp)
+names(AREA_just_p_Statistics)[1] <- "pvalue"
+
+## Rename and Reorder the data frames (related to p-values)
+AREA_just_p_Statistics$BrainRegions<-(colnames(OnlySubsPassingVisualQC_Freesurfer_AREA)[1:68])
+AREA_just_p_Statistics<-AREA_just_p_Statistics[, c(2,1)]
+
+```
+
+\
+\
+We make our ggseg figures out, tibbl-ing our data \
+We make two versions, one with just t-values \
+and one noting which reasons survive multiple comparisons \
+we then combine the two panels in cowplot \
+**Figure 5** 
+```{r we generate out ggseg Figure 5 }
+# load relevant R libraries
+
+library(ggseg); library(ggseg3d); library(tidyverse);library(stats);library(gt);library(cowplot)
+
+# Make tibble to eventually put into ggseg [for t-statistics]
+dk_statistical_values_AREA_T=tibble(
+  label=c("lh_bankssts",
+          "lh_caudalanteriorcingulate",
+          "lh_caudalmiddlefrontal",
+          "lh_cuneus",
+          "lh_entorhinal",
+          "lh_fusiform",
+          "lh_inferiorparietal",
+          "lh_inferiortemporal",
+          "lh_isthmuscingulate",
+          "lh_lateraloccipital",
+          "lh_lateralorbitofrontal",
+          "lh_lingual",
+          "lh_medialorbitofrontal",
+          "lh_middletemporal",
+          "lh_parahippocampal",
+          "lh_paracentral",
+          "lh_parsopercularis",
+          "lh_parsorbitalis",
+          "lh_parstriangularis",
+          "lh_pericalcarine",
+          "lh_postcentral",
+          "lh_posteriorcingulate",
+          "lh_precentral",
+          "lh_precuneus",
+          "lh_rostralanteriorcingulate",
+          "lh_rostralmiddlefrontal",
+          "lh_superiorfrontal",
+          "lh_superiorparietal",
+          "lh_superiortemporal",
+          "lh_supramarginal",
+          "lh_frontalpole",
+          "lh_temporalpole",
+          "lh_transversetemporal",
+          "lh_insula",
+          "rh_bankssts",
+          "rh_caudalanteriorcingulate",
+          "rh_caudalmiddlefrontal",
+          "rh_cuneus",
+          "rh_entorhinal",
+          "rh_fusiform",
+          "rh_inferiorparietal",
+          "rh_inferiortemporal",
+          "rh_isthmuscingulate",
+          "rh_lateraloccipital",
+          "rh_lateralorbitofrontal",
+          "rh_lingual",
+          "rh_medialorbitofrontal",
+          "rh_middletemporal",
+          "rh_parahippocampal",
+          "rh_paracentral",
+          "rh_parsopercularis",
+          "rh_parsorbitalis",
+          "rh_parstriangularis",
+          "rh_pericalcarine",
+          "rh_postcentral",
+          "rh_posteriorcingulate",
+          "rh_precentral",
+          "rh_precuneus",
+          "rh_rostralanteriorcingulate",
+          "rh_rostralmiddlefrontal",
+          "rh_superiorfrontal",
+          "rh_superiorparietal",
+          "rh_superiortemporal",
+          "rh_supramarginal",
+          "rh_frontalpole",
+          "rh_temporalpole",
+          "rh_transversetemporal",
+          "rh_insula"),
+  t=c(AREA_just_T_Statistics$T_stat[1],
+      AREA_just_T_Statistics$T_stat[2],
+      AREA_just_T_Statistics$T_stat[3],
+      AREA_just_T_Statistics$T_stat[4],
+      AREA_just_T_Statistics$T_stat[5],
+      AREA_just_T_Statistics$T_stat[6],
+      AREA_just_T_Statistics$T_stat[7],
+      AREA_just_T_Statistics$T_stat[8],
+      AREA_just_T_Statistics$T_stat[9],
+      AREA_just_T_Statistics$T_stat[10],
+      AREA_just_T_Statistics$T_stat[11],
+      AREA_just_T_Statistics$T_stat[12],
+      AREA_just_T_Statistics$T_stat[13],
+      AREA_just_T_Statistics$T_stat[14],
+      AREA_just_T_Statistics$T_stat[15],
+      AREA_just_T_Statistics$T_stat[16],
+      AREA_just_T_Statistics$T_stat[17],
+      AREA_just_T_Statistics$T_stat[18],
+      AREA_just_T_Statistics$T_stat[19],
+      AREA_just_T_Statistics$T_stat[20],
+      AREA_just_T_Statistics$T_stat[21],
+      AREA_just_T_Statistics$T_stat[22],
+      AREA_just_T_Statistics$T_stat[23],
+      AREA_just_T_Statistics$T_stat[24],
+      AREA_just_T_Statistics$T_stat[25],
+      AREA_just_T_Statistics$T_stat[26],
+      AREA_just_T_Statistics$T_stat[27],
+      AREA_just_T_Statistics$T_stat[28],
+      AREA_just_T_Statistics$T_stat[29],
+      AREA_just_T_Statistics$T_stat[30],
+      AREA_just_T_Statistics$T_stat[31],
+      AREA_just_T_Statistics$T_stat[32],
+      AREA_just_T_Statistics$T_stat[33],
+      AREA_just_T_Statistics$T_stat[34],
+      AREA_just_T_Statistics$T_stat[35],
+      AREA_just_T_Statistics$T_stat[36],
+      AREA_just_T_Statistics$T_stat[37],
+      AREA_just_T_Statistics$T_stat[38],
+      AREA_just_T_Statistics$T_stat[39],
+      AREA_just_T_Statistics$T_stat[40],
+      AREA_just_T_Statistics$T_stat[41],
+      AREA_just_T_Statistics$T_stat[42],
+      AREA_just_T_Statistics$T_stat[43],
+      AREA_just_T_Statistics$T_stat[44],
+      AREA_just_T_Statistics$T_stat[45],
+      AREA_just_T_Statistics$T_stat[46],
+      AREA_just_T_Statistics$T_stat[47],
+      AREA_just_T_Statistics$T_stat[48],
+      AREA_just_T_Statistics$T_stat[49],
+      AREA_just_T_Statistics$T_stat[50],
+      AREA_just_T_Statistics$T_stat[51],
+      AREA_just_T_Statistics$T_stat[52],
+      AREA_just_T_Statistics$T_stat[53],
+      AREA_just_T_Statistics$T_stat[54],
+      AREA_just_T_Statistics$T_stat[55],
+      AREA_just_T_Statistics$T_stat[56],
+      AREA_just_T_Statistics$T_stat[57],
+      AREA_just_T_Statistics$T_stat[58],
+      AREA_just_T_Statistics$T_stat[59],
+      AREA_just_T_Statistics$T_stat[60],
+      AREA_just_T_Statistics$T_stat[61],
+      AREA_just_T_Statistics$T_stat[62],
+      AREA_just_T_Statistics$T_stat[63],
+      AREA_just_T_Statistics$T_stat[64],
+      AREA_just_T_Statistics$T_stat[65],
+      AREA_just_T_Statistics$T_stat[66],
+      AREA_just_T_Statistics$T_stat[67],
+      AREA_just_T_Statistics$T_stat[68]))
+
+# Make tibble to eventually put into ggseg [for p-values]
+dk_statistical_values_AREA_p=tibble(
+label=c("lh_bankssts",
+          "lh_caudalanteriorcingulate",
+          "lh_caudalmiddlefrontal",
+          "lh_cuneus",
+          "lh_entorhinal",
+          "lh_fusiform",
+          "lh_inferiorparietal",
+          "lh_inferiortemporal",
+          "lh_isthmuscingulate",
+          "lh_lateraloccipital",
+          "lh_lateralorbitofrontal",
+          "lh_lingual",
+          "lh_medialorbitofrontal",
+          "lh_middletemporal",
+          "lh_parahippocampal",
+          "lh_paracentral",
+          "lh_parsopercularis",
+          "lh_parsorbitalis",
+          "lh_parstriangularis",
+          "lh_pericalcarine",
+          "lh_postcentral",
+          "lh_posteriorcingulate",
+          "lh_precentral",
+          "lh_precuneus",
+          "lh_rostralanteriorcingulate",
+          "lh_rostralmiddlefrontal",
+          "lh_superiorfrontal",
+          "lh_superiorparietal",
+          "lh_superiortemporal",
+          "lh_supramarginal",
+          "lh_frontalpole",
+          "lh_temporalpole",
+          "lh_transversetemporal",
+          "lh_insula",
+          "rh_bankssts",
+          "rh_caudalanteriorcingulate",
+          "rh_caudalmiddlefrontal",
+          "rh_cuneus",
+          "rh_entorhinal",
+          "rh_fusiform",
+          "rh_inferiorparietal",
+          "rh_inferiortemporal",
+          "rh_isthmuscingulate",
+          "rh_lateraloccipital",
+          "rh_lateralorbitofrontal",
+          "rh_lingual",
+          "rh_medialorbitofrontal",
+          "rh_middletemporal",
+          "rh_parahippocampal",
+          "rh_paracentral",
+          "rh_parsopercularis",
+          "rh_parsorbitalis",
+          "rh_parstriangularis",
+          "rh_pericalcarine",
+          "rh_postcentral",
+          "rh_posteriorcingulate",
+          "rh_precentral",
+          "rh_precuneus",
+          "rh_rostralanteriorcingulate",
+          "rh_rostralmiddlefrontal",
+          "rh_superiorfrontal",
+          "rh_superiorparietal",
+          "rh_superiortemporal",
+          "rh_supramarginal",
+          "rh_frontalpole",
+          "rh_temporalpole",
+          "rh_transversetemporal",
+          "rh_insula"),
+p=c(AREA_just_p_Statistics$pvalue[1],
+      AREA_just_p_Statistics$pvalue[2],
+      AREA_just_p_Statistics$pvalue[3],
+      AREA_just_p_Statistics$pvalue[4],
+      AREA_just_p_Statistics$pvalue[5],
+      AREA_just_p_Statistics$pvalue[6],
+      AREA_just_p_Statistics$pvalue[7],
+      AREA_just_p_Statistics$pvalue[8],
+      AREA_just_p_Statistics$pvalue[9],
+      AREA_just_p_Statistics$pvalue[10],
+      AREA_just_p_Statistics$pvalue[11],
+      AREA_just_p_Statistics$pvalue[12],
+      AREA_just_p_Statistics$pvalue[13],
+      AREA_just_p_Statistics$pvalue[14],
+      AREA_just_p_Statistics$pvalue[15],
+      AREA_just_p_Statistics$pvalue[16],
+      AREA_just_p_Statistics$pvalue[17],
+      AREA_just_p_Statistics$pvalue[18],
+      AREA_just_p_Statistics$pvalue[19],
+      AREA_just_p_Statistics$pvalue[20],
+      AREA_just_p_Statistics$pvalue[21],
+      AREA_just_p_Statistics$pvalue[22],
+      AREA_just_p_Statistics$pvalue[23],
+      AREA_just_p_Statistics$pvalue[24],
+      AREA_just_p_Statistics$pvalue[25],
+      AREA_just_p_Statistics$pvalue[26],
+      AREA_just_p_Statistics$pvalue[27],
+      AREA_just_p_Statistics$pvalue[28],
+      AREA_just_p_Statistics$pvalue[29],
+      AREA_just_p_Statistics$pvalue[30],
+      AREA_just_p_Statistics$pvalue[31],
+      AREA_just_p_Statistics$pvalue[32],
+      AREA_just_p_Statistics$pvalue[33],
+      AREA_just_p_Statistics$pvalue[34],
+      AREA_just_p_Statistics$pvalue[35],
+      AREA_just_p_Statistics$pvalue[36],
+      AREA_just_p_Statistics$pvalue[37],
+      AREA_just_p_Statistics$pvalue[38],
+      AREA_just_p_Statistics$pvalue[39],
+      AREA_just_p_Statistics$pvalue[40],
+      AREA_just_p_Statistics$pvalue[41],
+      AREA_just_p_Statistics$pvalue[42],
+      AREA_just_p_Statistics$pvalue[43],
+      AREA_just_p_Statistics$pvalue[44],
+      AREA_just_p_Statistics$pvalue[45],
+      AREA_just_p_Statistics$pvalue[46],
+      AREA_just_p_Statistics$pvalue[47],
+      AREA_just_p_Statistics$pvalue[48],
+      AREA_just_p_Statistics$pvalue[49],
+      AREA_just_p_Statistics$pvalue[50],
+      AREA_just_p_Statistics$pvalue[51],
+      AREA_just_p_Statistics$pvalue[52],
+      AREA_just_p_Statistics$pvalue[53],
+      AREA_just_p_Statistics$pvalue[54],
+      AREA_just_p_Statistics$pvalue[55],
+      AREA_just_p_Statistics$pvalue[56],
+      AREA_just_p_Statistics$pvalue[57],
+      AREA_just_p_Statistics$pvalue[58],
+      AREA_just_p_Statistics$pvalue[59],
+      AREA_just_p_Statistics$pvalue[60],
+      AREA_just_p_Statistics$pvalue[61],
+      AREA_just_p_Statistics$pvalue[62],
+      AREA_just_p_Statistics$pvalue[63],
+      AREA_just_p_Statistics$pvalue[64],
+      AREA_just_p_Statistics$pvalue[65],
+      AREA_just_p_Statistics$pvalue[66],
+      AREA_just_p_Statistics$pvalue[67],
+      AREA_just_p_Statistics$pvalue[68]))
+
+# We correct for multiple comparisons with this call
+dk_statistical_values_AREA_p$p_adjusted<-p.adjust(dk_statistical_values_AREA_p$p, method = "BH", n = length(dk_statistical_values_AREA_p$p))
+
+# We combine some dataframes
+dk_statistical_values_AREA_T_p <- dk_statistical_values_AREA_T %>% left_join(dk_statistical_values_AREA_p)
+
+# We select only regions that survive multiple comparisons, making others NA; we rename some columns
+AREA_Multiple_Comparisons<-as_tibble(as.numeric(dk_statistical_values_AREA_p$p_adjusted<.05))
+AREA_Multiple_Comparisons<-AREA_Multiple_Comparisons %>% mutate(value=recode(value,0,1))
+names(AREA_Multiple_Comparisons)[names(AREA_Multiple_Comparisons)=="value"] <- "Survives_Multiple_Comparison_Correction"
+dk_statistical_values_AREA_T_w_MultipleComparisons <- cbind(dk_statistical_values_AREA_T, AREA_Multiple_Comparisons)
+
+# We make 2 figures (but store them)
+AREA_p1<-ggseg(dk_statistical_values_AREA_T,atlas=dk,position = "stacked",mapping=aes(fill=t),colour="black") + scale_fill_gradient2(low = "#045a8d",high = "#de2d26",space = "Lab",limits = c(-6.75, 6.75)) +theme(legend.position = "bottom")
+AREA_p2<-ggseg(dk_statistical_values_AREA_T_w_MultipleComparisons,atlas=dk,position = "stacked",mapping=aes(fill=Survives_Multiple_Comparison_Correction),color="black")+theme(legend.position = "bottom")
+
+# Then output and combine in cowplot
+plot_grid(AREA_p1, AREA_p2,labels = c('Area T-Statistics', 'Survives Multiple \n Comparison Correction'))
+```
+
+\
+\
+We also output a Table showing the stats for \
+QC and surface area \
+with adjusted and unadjusted p-values \
+For the folks who like tables, etc. \
+**Table 2**
+```{r we generate our Table 2 }
+
+dk_statistical_values_AREA_T_p %>% mutate_if(is.numeric, round, 5) %>% rename('t_statistics' = 't')  %>% rename('p_value' = 'p') %>% rename('Area Parcel' = 'label') %>% gt() %>% tab_style(style = cell_fill(color = "#fc9272"),locations = cells_body(columns = "p_adjusted", rows = (p_adjusted<.05)))  %>% tab_style(style = cell_fill(color = "#fee0d2"),locations = cells_body(columns = "p_value", rows = (p_value<.05))) %>% tab_options(table.font.size = "smaller",column_labels.font.size = "small",data_row.padding = px(1))
+
+```
+
+```{r generate some descriptive statistics about associations between quality and AREA, and see how many areas survive multiple comparisons }
+range(dk_statistical_values_AREA_T_p$t)
+mean(dk_statistical_values_AREA_T_p$t)
+sd(dk_statistical_values_AREA_T_p$t)
+table(dk_statistical_values_AREA_T_p$p>.05)
+table(is.na(AREA_Multiple_Comparisons))
+
+```
+
+
+\
+\
+We now do the same thing for cortical thickness \
+[ Same tibbling and regression loops, etc.] \
+**Figure 6**
+```{r we generate out ggseg Figure 6 }
+
+OnlySubsPassingVisualQC_Freesurfer_THICKNESS<-OnlySubsPassingVisualQC[,149:217]
+OnlySubsPassingVisualQC_Freesurfer_THICKNESS<-OnlySubsPassingVisualQC_Freesurfer_THICKNESS %>% dplyr::select(-c(lh_MeanThickness_thickness))
+OnlySubsPassingVisualQC_Freesurfer_THICKNESS$CAT12_QC_Weighted_Average<-OnlySubsPassingVisualQC$CAT12_QC_Weighted_Average
+
+## Add Age and QC "back in"
+THICKNESS_for_Figure<-OnlySubsPassingVisualQC_Freesurfer_THICKNESS[,1:68]
+CAT12Ratings<-OnlySubsPassingVisualQC$CAT12_QC_Weighted_Average
+
+## Regression Loop, with Thickness as DV and Age & QC as IVs
+n<-68
+THICKNESS_Loop_to_Extract_Tstats <- lapply(1:n, function(x) lm(THICKNESS_for_Figure[,x] ~  CAT12Ratings))
+
+## Pull out T-Statistics from Regressions
+THICKNESS_summaries <- lapply(THICKNESS_Loop_to_Extract_Tstats, summary)
+THICKNESS_saved_T<-lapply(THICKNESS_summaries, function(x) x$coefficients[, c(3)])
+THICKNESS_T_Statistics_temp<-lapply(THICKNESS_saved_T, function (x) x[c('CAT12Ratings')])
+THICKNESS_just_T_Statistics<-do.call(rbind.data.frame, THICKNESS_T_Statistics_temp)
+names(THICKNESS_just_T_Statistics)[1] <- "T_stat"
+
+## Rename and Reorder the data frames (related to t-statistics)
+THICKNESS_just_T_Statistics$BrainRegions<-(colnames(OnlySubsPassingVisualQC_Freesurfer_THICKNESS)[1:68])
+THICKNESS_just_T_Statistics<-THICKNESS_just_T_Statistics[, c(2,1)]
+
+## Pull out P-Values from Regressions
+THICKNESS_saved_p<-lapply(THICKNESS_summaries, function(x) x$coefficients[, c(4)])
+THICKNESS_p_Statistics_temp<-lapply(THICKNESS_saved_p, function (x) x[c('CAT12Ratings')])
+THICKNESS_just_p_Statistics<-do.call(rbind.data.frame, THICKNESS_p_Statistics_temp)
+names(THICKNESS_just_p_Statistics)[1] <- "pvalue"
+
+## Rename and Reorder the data frames (related to p-values)
+THICKNESS_just_p_Statistics$BrainRegions<-(colnames(OnlySubsPassingVisualQC_Freesurfer_THICKNESS)[1:68])
+THICKNESS_just_p_Statistics<-THICKNESS_just_p_Statistics[, c(2,1)]
+
+# Make tibble to eventually put into ggseg [for t-statistics]
+dk_statistical_values_THICK_T= tibble(
+  label=c("lh_bankssts",
+          "lh_caudalanteriorcingulate",
+          "lh_caudalmiddlefrontal",
+          "lh_cuneus",
+          "lh_entorhinal",
+          "lh_fusiform",
+          "lh_inferiorparietal",
+          "lh_inferiortemporal",
+          "lh_isthmuscingulate",
+          "lh_lateraloccipital",
+          "lh_lateralorbitofrontal",
+          "lh_lingual",
+          "lh_medialorbitofrontal",
+          "lh_middletemporal",
+          "lh_parahippocampal",
+          "lh_paracentral",
+          "lh_parsopercularis",
+          "lh_parsorbitalis",
+          "lh_parstriangularis",
+          "lh_pericalcarine",
+          "lh_postcentral",
+          "lh_posteriorcingulate",
+          "lh_precentral",
+          "lh_precuneus",
+          "lh_rostralanteriorcingulate",
+          "lh_rostralmiddlefrontal",
+          "lh_superiorfrontal",
+          "lh_superiorparietal",
+          "lh_superiortemporal",
+          "lh_supramarginal",
+          "lh_frontalpole",
+          "lh_temporalpole",
+          "lh_transversetemporal",
+          "lh_insula",
+          "rh_bankssts",
+          "rh_caudalanteriorcingulate",
+          "rh_caudalmiddlefrontal",
+          "rh_cuneus",
+          "rh_entorhinal",
+          "rh_fusiform",
+          "rh_inferiorparietal",
+          "rh_inferiortemporal",
+          "rh_isthmuscingulate",
+          "rh_lateraloccipital",
+          "rh_lateralorbitofrontal",
+          "rh_lingual",
+          "rh_medialorbitofrontal",
+          "rh_middletemporal",
+          "rh_parahippocampal",
+          "rh_paracentral",
+          "rh_parsopercularis",
+          "rh_parsorbitalis",
+          "rh_parstriangularis",
+          "rh_pericalcarine",
+          "rh_postcentral",
+          "rh_posteriorcingulate",
+          "rh_precentral",
+          "rh_precuneus",
+          "rh_rostralanteriorcingulate",
+          "rh_rostralmiddlefrontal",
+          "rh_superiorfrontal",
+          "rh_superiorparietal",
+          "rh_superiortemporal",
+          "rh_supramarginal",
+          "rh_frontalpole",
+          "rh_temporalpole",
+          "rh_transversetemporal",
+          "rh_insula"),
+  t=c(THICKNESS_just_T_Statistics$T_stat[1],
+      THICKNESS_just_T_Statistics$T_stat[2],
+      THICKNESS_just_T_Statistics$T_stat[3],
+      THICKNESS_just_T_Statistics$T_stat[4],
+      THICKNESS_just_T_Statistics$T_stat[5],
+      THICKNESS_just_T_Statistics$T_stat[6],
+      THICKNESS_just_T_Statistics$T_stat[7],
+      THICKNESS_just_T_Statistics$T_stat[8],
+      THICKNESS_just_T_Statistics$T_stat[9],
+      THICKNESS_just_T_Statistics$T_stat[10],
+      THICKNESS_just_T_Statistics$T_stat[11],
+      THICKNESS_just_T_Statistics$T_stat[12],
+      THICKNESS_just_T_Statistics$T_stat[13],
+      THICKNESS_just_T_Statistics$T_stat[14],
+      THICKNESS_just_T_Statistics$T_stat[15],
+      THICKNESS_just_T_Statistics$T_stat[16],
+      THICKNESS_just_T_Statistics$T_stat[17],
+      THICKNESS_just_T_Statistics$T_stat[18],
+      THICKNESS_just_T_Statistics$T_stat[19],
+      THICKNESS_just_T_Statistics$T_stat[20],
+      THICKNESS_just_T_Statistics$T_stat[21],
+      THICKNESS_just_T_Statistics$T_stat[22],
+      THICKNESS_just_T_Statistics$T_stat[23],
+      THICKNESS_just_T_Statistics$T_stat[24],
+      THICKNESS_just_T_Statistics$T_stat[25],
+      THICKNESS_just_T_Statistics$T_stat[26],
+      THICKNESS_just_T_Statistics$T_stat[27],
+      THICKNESS_just_T_Statistics$T_stat[28],
+      THICKNESS_just_T_Statistics$T_stat[29],
+      THICKNESS_just_T_Statistics$T_stat[30],
+      THICKNESS_just_T_Statistics$T_stat[31],
+      THICKNESS_just_T_Statistics$T_stat[32],
+      THICKNESS_just_T_Statistics$T_stat[33],
+      THICKNESS_just_T_Statistics$T_stat[34],
+      THICKNESS_just_T_Statistics$T_stat[35],
+      THICKNESS_just_T_Statistics$T_stat[36],
+      THICKNESS_just_T_Statistics$T_stat[37],
+      THICKNESS_just_T_Statistics$T_stat[38],
+      THICKNESS_just_T_Statistics$T_stat[39],
+      THICKNESS_just_T_Statistics$T_stat[40],
+      THICKNESS_just_T_Statistics$T_stat[41],
+      THICKNESS_just_T_Statistics$T_stat[42],
+      THICKNESS_just_T_Statistics$T_stat[43],
+      THICKNESS_just_T_Statistics$T_stat[44],
+      THICKNESS_just_T_Statistics$T_stat[45],
+      THICKNESS_just_T_Statistics$T_stat[46],
+      THICKNESS_just_T_Statistics$T_stat[47],
+      THICKNESS_just_T_Statistics$T_stat[48],
+      THICKNESS_just_T_Statistics$T_stat[49],
+      THICKNESS_just_T_Statistics$T_stat[50],
+      THICKNESS_just_T_Statistics$T_stat[51],
+      THICKNESS_just_T_Statistics$T_stat[52],
+      THICKNESS_just_T_Statistics$T_stat[53],
+      THICKNESS_just_T_Statistics$T_stat[54],
+      THICKNESS_just_T_Statistics$T_stat[55],
+      THICKNESS_just_T_Statistics$T_stat[56],
+      THICKNESS_just_T_Statistics$T_stat[57],
+      THICKNESS_just_T_Statistics$T_stat[58],
+      THICKNESS_just_T_Statistics$T_stat[59],
+      THICKNESS_just_T_Statistics$T_stat[60],
+      THICKNESS_just_T_Statistics$T_stat[61],
+      THICKNESS_just_T_Statistics$T_stat[62],
+      THICKNESS_just_T_Statistics$T_stat[63],
+      THICKNESS_just_T_Statistics$T_stat[64],
+      THICKNESS_just_T_Statistics$T_stat[65],
+      THICKNESS_just_T_Statistics$T_stat[66],
+      THICKNESS_just_T_Statistics$T_stat[67],
+      THICKNESS_just_T_Statistics$T_stat[68]))
+
+# Make tibble to eventually put into ggseg [for p-values]
+dk_statistical_values_THICK_p= tibble(
+  label=c("lh_bankssts",
+          "lh_caudalanteriorcingulate",
+          "lh_caudalmiddlefrontal",
+          "lh_cuneus",
+          "lh_entorhinal",
+          "lh_fusiform",
+          "lh_inferiorparietal",
+          "lh_inferiortemporal",
+          "lh_isthmuscingulate",
+          "lh_lateraloccipital",
+          "lh_lateralorbitofrontal",
+          "lh_lingual",
+          "lh_medialorbitofrontal",
+          "lh_middletemporal",
+          "lh_parahippocampal",
+          "lh_paracentral",
+          "lh_parsopercularis",
+          "lh_parsorbitalis",
+          "lh_parstriangularis",
+          "lh_pericalcarine",
+          "lh_postcentral",
+          "lh_posteriorcingulate",
+          "lh_precentral",
+          "lh_precuneus",
+          "lh_rostralanteriorcingulate",
+          "lh_rostralmiddlefrontal",
+          "lh_superiorfrontal",
+          "lh_superiorparietal",
+          "lh_superiortemporal",
+          "lh_supramarginal",
+          "lh_frontalpole",
+          "lh_temporalpole",
+          "lh_transversetemporal",
+          "lh_insula",
+          "rh_bankssts",
+          "rh_caudalanteriorcingulate",
+          "rh_caudalmiddlefrontal",
+          "rh_cuneus",
+          "rh_entorhinal",
+          "rh_fusiform",
+          "rh_inferiorparietal",
+          "rh_inferiortemporal",
+          "rh_isthmuscingulate",
+          "rh_lateraloccipital",
+          "rh_lateralorbitofrontal",
+          "rh_lingual",
+          "rh_medialorbitofrontal",
+          "rh_middletemporal",
+          "rh_parahippocampal",
+          "rh_paracentral",
+          "rh_parsopercularis",
+          "rh_parsorbitalis",
+          "rh_parstriangularis",
+          "rh_pericalcarine",
+          "rh_postcentral",
+          "rh_posteriorcingulate",
+          "rh_precentral",
+          "rh_precuneus",
+          "rh_rostralanteriorcingulate",
+          "rh_rostralmiddlefrontal",
+          "rh_superiorfrontal",
+          "rh_superiorparietal",
+          "rh_superiortemporal",
+          "rh_supramarginal",
+          "rh_frontalpole",
+          "rh_temporalpole",
+          "rh_transversetemporal",
+          "rh_insula"),
+  p=c(THICKNESS_just_p_Statistics$pvalue[1],
+      THICKNESS_just_p_Statistics$pvalue[2],
+      THICKNESS_just_p_Statistics$pvalue[3],
+      THICKNESS_just_p_Statistics$pvalue[4],
+      THICKNESS_just_p_Statistics$pvalue[5],
+      THICKNESS_just_p_Statistics$pvalue[6],
+      THICKNESS_just_p_Statistics$pvalue[7],
+      THICKNESS_just_p_Statistics$pvalue[8],
+      THICKNESS_just_p_Statistics$pvalue[9],
+      THICKNESS_just_p_Statistics$pvalue[10],
+      THICKNESS_just_p_Statistics$pvalue[11],
+      THICKNESS_just_p_Statistics$pvalue[12],
+      THICKNESS_just_p_Statistics$pvalue[13],
+      THICKNESS_just_p_Statistics$pvalue[14],
+      THICKNESS_just_p_Statistics$pvalue[15],
+      THICKNESS_just_p_Statistics$pvalue[16],
+      THICKNESS_just_p_Statistics$pvalue[17],
+      THICKNESS_just_p_Statistics$pvalue[18],
+      THICKNESS_just_p_Statistics$pvalue[19],
+      THICKNESS_just_p_Statistics$pvalue[20],
+      THICKNESS_just_p_Statistics$pvalue[21],
+      THICKNESS_just_p_Statistics$pvalue[22],
+      THICKNESS_just_p_Statistics$pvalue[23],
+      THICKNESS_just_p_Statistics$pvalue[24],
+      THICKNESS_just_p_Statistics$pvalue[25],
+      THICKNESS_just_p_Statistics$pvalue[26],
+      THICKNESS_just_p_Statistics$pvalue[27],
+      THICKNESS_just_p_Statistics$pvalue[28],
+      THICKNESS_just_p_Statistics$pvalue[29],
+      THICKNESS_just_p_Statistics$pvalue[30],
+      THICKNESS_just_p_Statistics$pvalue[31],
+      THICKNESS_just_p_Statistics$pvalue[32],
+      THICKNESS_just_p_Statistics$pvalue[33],
+      THICKNESS_just_p_Statistics$pvalue[34],
+      THICKNESS_just_p_Statistics$pvalue[35],
+      THICKNESS_just_p_Statistics$pvalue[36],
+      THICKNESS_just_p_Statistics$pvalue[37],
+      THICKNESS_just_p_Statistics$pvalue[38],
+      THICKNESS_just_p_Statistics$pvalue[39],
+      THICKNESS_just_p_Statistics$pvalue[40],
+      THICKNESS_just_p_Statistics$pvalue[41],
+      THICKNESS_just_p_Statistics$pvalue[42],
+      THICKNESS_just_p_Statistics$pvalue[43],
+      THICKNESS_just_p_Statistics$pvalue[44],
+      THICKNESS_just_p_Statistics$pvalue[45],
+      THICKNESS_just_p_Statistics$pvalue[46],
+      THICKNESS_just_p_Statistics$pvalue[47],
+      THICKNESS_just_p_Statistics$pvalue[48],
+      THICKNESS_just_p_Statistics$pvalue[49],
+      THICKNESS_just_p_Statistics$pvalue[50],
+      THICKNESS_just_p_Statistics$pvalue[51],
+      THICKNESS_just_p_Statistics$pvalue[52],
+      THICKNESS_just_p_Statistics$pvalue[53],
+      THICKNESS_just_p_Statistics$pvalue[54],
+      THICKNESS_just_p_Statistics$pvalue[55],
+      THICKNESS_just_p_Statistics$pvalue[56],
+      THICKNESS_just_p_Statistics$pvalue[57],
+      THICKNESS_just_p_Statistics$pvalue[58],
+      THICKNESS_just_p_Statistics$pvalue[59],
+      THICKNESS_just_p_Statistics$pvalue[60],
+      THICKNESS_just_p_Statistics$pvalue[61],
+      THICKNESS_just_p_Statistics$pvalue[62],
+      THICKNESS_just_p_Statistics$pvalue[63],
+      THICKNESS_just_p_Statistics$pvalue[64],
+      THICKNESS_just_p_Statistics$pvalue[65],
+      THICKNESS_just_p_Statistics$pvalue[66],
+      THICKNESS_just_p_Statistics$pvalue[67],
+      THICKNESS_just_p_Statistics$pvalue[68]))
+
+dk_statistical_values_THICK_p$p_adjusted<-p.adjust(dk_statistical_values_THICK_p$p, method = "BH", n = length(dk_statistical_values_THICK_p$p))
+
+dk_statistical_values_THICK_T_p <- dk_statistical_values_THICK_T %>% left_join(dk_statistical_values_THICK_p)
+
+
+THICK_Multiple_Comparisons<-as_tibble(as.numeric(dk_statistical_values_THICK_p$p_adjusted<.05))
+THICK_Multiple_Comparisons<-THICK_Multiple_Comparisons %>% mutate(value=recode(value,0,1))
+
+names(THICK_Multiple_Comparisons)[names(THICK_Multiple_Comparisons)=="value"] <- "Survives_Multiple_Comparison_Correction"
+
+dk_statistical_values_THICK_T_w_MultipleComparisons <- cbind(dk_statistical_values_THICK_T, THICK_Multiple_Comparisons)
+
+THICK_p1<-ggseg(dk_statistical_values_THICK_T,atlas=dk,position = "stacked",mapping=aes(fill=t),colour="black") + scale_fill_gradient2(low = "#045a8d",high = "#de2d26",space = "Lab",limits = c(-6.75, 6.75)) +theme(legend.position = "bottom")
+THICK_p2<-ggseg(dk_statistical_values_THICK_T_w_MultipleComparisons,atlas=dk,position = "stacked",mapping=aes(fill=Survives_Multiple_Comparison_Correction),color="black")+theme(legend.position = "bottom")
+
+plot_grid(THICK_p1, THICK_p2,labels = c('Thickness T-Statistics', 'Survives Multiple \n Comparison Correction'))
+
+```
+
+\
+\
+Again, we also output a Table showing the stats for \
+QC and thickness \
+with adjusted and unadjusted p-values \
+For the folks who like tables, etc. \
+**Table 3** \
+```{r we generate our Table 3 }
+
+dk_statistical_values_THICK_T_p %>% mutate_if(is.numeric, round, 5) %>% rename('t_statistics' = 't')  %>% rename('p_value' = 'p') %>% rename('Thickness Parcel' = 'label') %>% gt() %>% tab_style(style = cell_fill(color = "#fc9272"),locations = cells_body(columns = "p_adjusted", rows = (p_adjusted<.05)))  %>% tab_style(style = cell_fill(color = "#fee0d2"),locations = cells_body(columns = "p_value", rows = (p_value<.05))) %>% tab_options(table.font.size = "smaller",column_labels.font.size = "small",data_row.padding = px(1))
+
+```
+
+```{r generate some descriptive statistics about associations between quality and THICKNESS, and see how many areas survive multiple comparisons }
+range(dk_statistical_values_THICK_T_p$t)
+mean(dk_statistical_values_THICK_T_p$t)
+sd(dk_statistical_values_THICK_T_p$t)
+table(dk_statistical_values_THICK_T_p$p>.05)
+table(is.na(THICK_Multiple_Comparisons))
+
+```
+
+
+\
+\
+Final set of loops and data organization \
+This final time for the subcortical volumes \
+[ Same tibbling and regression loops, etc.] \
+**Figure 7** \
+```{r we generate out ggseg Figure 7 }
+
+OnlySubsPassingVisualQC_Freesurfer_ASEG<-OnlySubsPassingVisualQC[,14:58]
+OnlySubsPassingVisualQC_Freesurfer_ASEG<-OnlySubsPassingVisualQC_Freesurfer_ASEG %>% dplyr::select(-c(Left.Cerebellum.White.Matter, Left.Cerebellum.Cortex, Left.Lateral.Ventricle,Left.Inf.Lat.Vent,X3rd.Ventricle,X4th.Ventricle,CSF,Left.vessel,Left.choroid.plexus,Right.Cerebellum.White.Matter,Right.Cerebellum.Cortex,Right.Lateral.Ventricle,Right.Inf.Lat.Vent,Right.vessel,Right.choroid.plexus,X5th.Ventricle,WM.hypointensities,Left.WM.hypointensities,Right.WM.hypointensities,non.WM.hypointensities,Left.non.WM.hypointensities,Right.non.WM.hypointensities,Optic.Chiasm))
+CAT12Ratings<-OnlySubsPassingVisualQC$CAT12_QC_Weighted_Average
+
+## Regression Loop, with Aseg as DV and Age & QC as IVs
+n<-22
+ASEG_Loop_to_Extract_Tstats <- lapply(1:n, function(x) lm(OnlySubsPassingVisualQC_Freesurfer_ASEG[,x] ~ + CAT12Ratings))
+
+## Pull out T-Statistics from Regressions
+ASEG_summaries  <- lapply(ASEG_Loop_to_Extract_Tstats, summary)
+ASEG_saved_T<-lapply(ASEG_summaries, function(x) x$coefficients[, c(3)])
+ASEG_T_Statistics_temp<-lapply(ASEG_saved_T, function (x) x[c('CAT12Ratings')])
+ASEG_just_T_Statistics<-do.call(rbind.data.frame, ASEG_T_Statistics_temp)
+names(ASEG_just_T_Statistics)[1] <- "T_stat"
+
+## Rename and Reorder the data frames (related to t-statistics)
+ASEG_just_T_Statistics$BrainRegions<-(colnames(OnlySubsPassingVisualQC_Freesurfer_ASEG)[1:22])
+ASEG_just_T_Statistics<-ASEG_just_T_Statistics[, c(2,1)]
+
+## Pull out P-Values from Regressions
+ASEG_saved_p<-lapply(ASEG_summaries, function(x) x$coefficients[, c(4)])
+ASEG_p_Statistics_temp<-lapply(ASEG_saved_p, function (x) x[c('CAT12Ratings')])
+ASEG_just_p_Statistics<-do.call(rbind.data.frame, ASEG_p_Statistics_temp)
+names(ASEG_just_p_Statistics)[1] <- "pvalue"
+
+## Rename and Reorder the data frames (related to p-values)
+ASEG_just_p_Statistics$BrainRegions<-(colnames(OnlySubsPassingVisualQC_Freesurfer_ASEG)[1:22])
+ASEG_just_p_Statistics<-ASEG_just_p_Statistics[, c(2,1)]
+
+# Make tibble to eventually put into ggseg [for t-statistics]
+aseg_statistical_values_T= tibble(
+  label=c("Left-Thalamus-Proper",
+          "Left-Caudate",
+          "Left-Putamen",
+          "Left-Pallidum",
+          "brain-stem",
+          "Left-Hippocampus",
+          "Left-Amygdala",
+          "Left-Accumbens-area",
+          "Left-VentralDC",
+          "Right-Thalamus-Proper",
+          "Right-Caudate",
+          "Right-Putamen",
+          "Right-Pallidum",
+          "Right-Hippocampus",
+          "Right-Amygdala",
+          "Right-Accumbens-area",
+          "Right-VentralDC",
+          "cc-posterior",
+          "cc-mid-posterior",
+          "cc-central",
+          "cc-mid-anterior",
+          "cc-anterior"),
+  t=c(ASEG_just_T_Statistics$T_stat[1],
+      ASEG_just_T_Statistics$T_stat[2],
+      ASEG_just_T_Statistics$T_stat[3],
+      ASEG_just_T_Statistics$T_stat[4],
+      ASEG_just_T_Statistics$T_stat[5],
+      ASEG_just_T_Statistics$T_stat[6],
+      ASEG_just_T_Statistics$T_stat[7],
+      ASEG_just_T_Statistics$T_stat[8],
+      ASEG_just_T_Statistics$T_stat[9],
+      ASEG_just_T_Statistics$T_stat[10],
+      ASEG_just_T_Statistics$T_stat[11],
+      ASEG_just_T_Statistics$T_stat[12],
+      ASEG_just_T_Statistics$T_stat[13],
+      ASEG_just_T_Statistics$T_stat[14],
+      ASEG_just_T_Statistics$T_stat[15],
+      ASEG_just_T_Statistics$T_stat[16],
+      ASEG_just_T_Statistics$T_stat[17],
+      ASEG_just_T_Statistics$T_stat[18],
+      ASEG_just_T_Statistics$T_stat[19],
+      ASEG_just_T_Statistics$T_stat[20],
+      ASEG_just_T_Statistics$T_stat[21],
+      ASEG_just_T_Statistics$T_stat[22]))
+
+# Make tibble to eventually put into ggseg [for p-values]
+aseg_statistical_values_p= tibble(
+  label=c("Left-Thalamus-Proper",
+          "Left-Caudate",
+          "Left-Putamen",
+          "Left-Pallidum",
+          "brain-stem",
+          "Left-Hippocampus",
+          "Left-Amygdala",
+          "Left-Accumbens-area",
+          "Left-VentralDC",
+          "Right-Thalamus-Proper",
+          "Right-Caudate",
+          "Right-Putamen",
+          "Right-Pallidum",
+          "Right-Hippocampus",
+          "Right-Amygdala",
+          "Right-Accumbens-area",
+          "Right-VentralDC",
+          "cc-posterior",
+          "cc-mid-posterior",
+          "cc-central",
+          "cc-mid-anterior",
+          "cc-anterior"),
+  p=c(ASEG_just_p_Statistics$pvalue[1],
+      ASEG_just_p_Statistics$pvalue[2],
+      ASEG_just_p_Statistics$pvalue[3],
+      ASEG_just_p_Statistics$pvalue[4],
+      ASEG_just_p_Statistics$pvalue[5],
+      ASEG_just_p_Statistics$pvalue[6],
+      ASEG_just_p_Statistics$pvalue[7],
+      ASEG_just_p_Statistics$pvalue[8],
+      ASEG_just_p_Statistics$pvalue[9],
+      ASEG_just_p_Statistics$pvalue[10],
+      ASEG_just_p_Statistics$pvalue[11],
+      ASEG_just_p_Statistics$pvalue[12],
+      ASEG_just_p_Statistics$pvalue[13],
+      ASEG_just_p_Statistics$pvalue[14],
+      ASEG_just_p_Statistics$pvalue[15],
+      ASEG_just_p_Statistics$pvalue[16],
+      ASEG_just_p_Statistics$pvalue[17],
+      ASEG_just_p_Statistics$pvalue[18],
+      ASEG_just_p_Statistics$pvalue[19],
+      ASEG_just_p_Statistics$pvalue[20],
+      ASEG_just_p_Statistics$pvalue[21],
+      ASEG_just_p_Statistics$pvalue[22]))
+
+# Multiple Comparison Correction
+aseg_statistical_values_p$p_adjusted<-p.adjust(aseg_statistical_values_p$p, method = "BH", n = length(aseg_statistical_values_p$p))
+aseg_statistical_values_T_p <- aseg_statistical_values_T %>% left_join(aseg_statistical_values_p)
+
+Aseg_Multiple_Comparisons<-as_tibble(as.numeric(aseg_statistical_values_p$p_adjusted<.05))
+Aseg_Multiple_Comparisons<-Aseg_Multiple_Comparisons %>% mutate(value=recode(value,0,1))
+
+names(Aseg_Multiple_Comparisons)[names(Aseg_Multiple_Comparisons)=="value"] <- "Survives_Multiple_Comparison_Correction"
+
+aseg_statistical_values_T_w_MultipleComparisons <- cbind(aseg_statistical_values_T, Aseg_Multiple_Comparisons)
+
+aseg_p1<-ggseg(aseg_statistical_values_T,atlas=aseg,position = "stacked",mapping=aes(fill=t,color=Survives_Multiple_Comparison_Correction),colour="black") + scale_fill_gradient2(low = "#045a8d",high = "#de2d26",space = "Lab",limits = c(-6.75, 6.75))+theme(legend.position = "bottom")
+
+aseg_p2<-ggseg(aseg_statistical_values_T_w_MultipleComparisons,atlas=aseg,position = "stacked",mapping=aes(fill=Survives_Multiple_Comparison_Correction),color="black")+theme(legend.position = "bottom")
+
+plot_grid(aseg_p1, aseg_p2,labels = c('Subcortical Volumes \n T-Statistics', 'Survives Multiple \n Comparison Correction'))
+
+```
+
+
+\
+\
+Again, we also output a Table showing the stats for \
+QC and aseg volumes \
+with adjusted and unadjusted p-values \
+For the folks who like tables, etc. \
+**Table 4** \
+```{r we generate our Table 4 }
+
+aseg_statistical_values_T_p %>% mutate_if(is.numeric, round, 5) %>% rename('t_statistics' = 't')  %>% rename('p_value' = 'p') %>% rename('Aseg_Volume' = 'label') %>% gt() %>% tab_style(style = cell_fill(color = "#fc9272"),locations = cells_body(columns = "p_adjusted", rows = (p_adjusted<.05)))  %>% tab_style(style = cell_fill(color = "#fee0d2"),locations = cells_body(columns = "p_value", rows = (p_value<.05))) %>% tab_options(table.font.size = "smaller",column_labels.font.size = "small",data_row.padding = px(1))
+```
+
+```{r generate some descriptive statistics about associations between quality and Subcortical volumes, and see how many areas survive multiple comparisons }
+range(aseg_statistical_values_T_p$t)
+mean(aseg_statistical_values_T_p$t)
+sd(aseg_statistical_values_T_p$t)
+table(aseg_statistical_values_T_p$p>.05)
+table(is.na(Aseg_Multiple_Comparisons))
+
+```
+
+
+\
